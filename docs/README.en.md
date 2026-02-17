@@ -152,6 +152,7 @@ Required config keys (Admin -> Config, `register.*`):
 | `grok-4-heavy` | 4 | Super | Yes | Yes | - |
 | `grok-4.1` | 1 | Basic/Super | Yes | Yes | - |
 | `grok-4.1-thinking` | 4 | Basic/Super | Yes | Yes | - |
+| `grok-4.20-beta` | 1 | Basic/Super | Yes | Yes | - |
 | `grok-imagine-1.0` | 4 | Basic/Super | - | Yes | - |
 | `grok-imagine-1.0-video` | - | Basic/Super | - | - | Yes |
 

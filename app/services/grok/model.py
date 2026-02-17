@@ -123,6 +123,14 @@ class ModelService:
             display_name="Grok 4.1 Thinking"
         ),
         ModelInfo(
+            model_id="grok-4.20-beta",
+            grok_model="grok-420",
+            rate_limit_model="grok-420",
+            model_mode="MODEL_MODE_GROK_420",
+            cost=Cost.LOW,
+            display_name="Grok 4.20 Beta"
+        ),
+        ModelInfo(
             model_id="grok-imagine-1.0",
             grok_model="grok-3",
             rate_limit_model="grok-3",
