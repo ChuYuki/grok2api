@@ -175,6 +175,7 @@ python scripts/smoke_test.py --base-url http://127.0.0.1:8000
 | `grok-4-heavy`           |  4  | Super       |   支持   |   支持   |    -    |
 | `grok-4.1`               |  1  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-4.1-thinking`      |  4  | Basic/Super |   支持   |   支持   |    -    |
+| `grok-4.20-beta`         |  1  | Basic/Super |   支持   |   支持   |    -    |
 | `grok-imagine-1.0`       |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-edit`  |  4  | Basic/Super |    -    |   支持   |    -    |
 | `grok-imagine-1.0-video` |  -  | Basic/Super |    -    |    -    |   支持   |
