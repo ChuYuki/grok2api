@@ -300,10 +300,12 @@ class GrokChatService:
             message, model, mode, think, 
             file_attachments, image_attachments
         )
+        request_id = headers.get("x-xai-request-id", "")
         if get_config("grok.debug_upstream_payload", False):
             logger.info(
                 "Upstream payload model routing",
                 extra={
+                    "request_id": request_id,
                     "modelName": payload.get("modelName"),
                     "modelMode": payload.get("modelMode"),
                     "requestModelDetails.modelId": (
@@ -342,22 +344,35 @@ class GrokChatService:
                 if response.status_code != 200:
                     try:
                         content = await response.text()
-                        content = content[:1000] # 限制长度避免日志过大
-                    except:
+                        content = content[:2000] # 限制长度避免日志过大
+                    except Exception:
                         content = "Unable to read response content"
 
                     logger.error(
-                        f"Chat failed: {response.status_code}, {content}",
-                        extra={"status": response.status_code, "token": token[:10] + "..."}
+                        f"Chat failed: {response.status_code}",
+                        extra={
+                            "status": response.status_code,
+                            "token": token[:10] + "...",
+                            "request_id": request_id,
+                            "modelName": payload.get("modelName"),
+                            "modelMode": payload.get("modelMode"),
+                            "response_snippet": content,
+                        },
                     )
                     # 关闭 session 并抛出异常
                     try:
                         await session.close()
-                    except:
+                    except Exception:
                         pass
                     raise UpstreamException(
                         message=f"Grok API request failed: {response.status_code}",
-                        details={"status": response.status_code}
+                        details={
+                            "status": response.status_code,
+                            "request_id": request_id,
+                            "modelName": payload.get("modelName"),
+                            "modelMode": payload.get("modelMode"),
+                            "response_snippet": content,
+                        },
                     )
                 
                 # 返回 session 和 response
@@ -368,14 +383,26 @@ class GrokChatService:
                 raise
             except Exception as e:
                 # 其他异常，关闭 session 并包装
-                logger.error(f"Chat request error: {e}")
+                logger.error(
+                    f"Chat request error: {e}",
+                    extra={
+                        "request_id": request_id,
+                        "modelName": payload.get("modelName"),
+                        "modelMode": payload.get("modelMode"),
+                    },
+                )
                 try:
                     await session.close()
-                except:
+                except Exception:
                     pass
                 raise UpstreamException(
                     message=f"Chat connection failed: {str(e)}",
-                    details={"error": str(e)}
+                    details={
+                        "error": str(e),
+                        "request_id": request_id,
+                        "modelName": payload.get("modelName"),
+                        "modelMode": payload.get("modelMode"),
+                    },
                 )
         
         # 建立连接
@@ -389,6 +416,17 @@ class GrokChatService:
         except Exception as e:
             # 记录失败
             status_code = extract_status(e)
+            logger.error(
+                "Chat establish_connection failed after retries",
+                extra={
+                    "status": status_code,
+                    "request_id": request_id,
+                    "modelName": payload.get("modelName"),
+                    "modelMode": payload.get("modelMode"),
+                    "error": str(e),
+                    "details": getattr(e, "details", None),
+                },
+            )
             if status_code:
                 token_mgr = await get_token_manager()
                 await token_mgr.record_fail(token, status_code, str(e))
