@@ -298,6 +298,20 @@ class StreamProcessor(BaseProcessor):
                             "tokenLen": len(token) if isinstance(token, str) else 0,
                         },
                     )
+                    if self.show_think:
+                        debug_parts = [
+                            f"tag={message_tag or '-'}",
+                            f"rollout={rollout_id or '-'}",
+                            f"fn={1 if function_call else 0}",
+                            f"card={1 if tool_usage_card_id else 0}",
+                            f"web={1 if web_results_data else 0}",
+                            f"code={1 if code_result else 0}",
+                            f"think={1 if is_thinking else 0}",
+                        ]
+                        if not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                        yield self._sse(f"[debug] {' '.join(debug_parts)}\n")
 
                 # 处理工具调用（结构化字段，Expert 模式）
                 if message_tag == "function_call" and function_call:
