@@ -5,6 +5,7 @@ import time
 import uuid
 import random
 import html
+import re
 import orjson
 from typing import Any, AsyncGenerator, Optional, AsyncIterable, List
 
@@ -68,6 +69,28 @@ def _build_video_poster_preview(video_url: str, thumbnail_url: str = "") -> str:
     </span>
   </span>
 </a>'''
+
+
+def _parse_tool_usage_card(token: str) -> tuple[str, dict]:
+    """Extract tool name/args from tool_usage_card token payload."""
+    if not token:
+        return "", {}
+    tool_name = ""
+    tool_args: dict = {}
+
+    tool_match = re.search(r"<xai:tool_name>([^<]+)</xai:tool_name>", token)
+    if tool_match:
+        tool_name = tool_match.group(1).strip()
+
+    args_match = re.search(r"<!\[CDATA\[(.+?)\]\]>", token, re.DOTALL)
+    if args_match:
+        try:
+            parsed = orjson.loads(args_match.group(1))
+            if isinstance(parsed, dict):
+                tool_args = parsed
+        except Exception:
+            tool_args = {}
+    return tool_name, tool_args
 
 
 class BaseProcessor:
@@ -156,6 +179,7 @@ class StreamProcessor(BaseProcessor):
         self.thinking_finished: bool = False
         self._tool_buf: str = ""
         self._tool_tag: Optional[str] = None
+        self._last_rollout_id: str = ""
 
         if think is None:
             self.show_think = get_config("grok.thinking", False)
@@ -173,7 +197,12 @@ class StreamProcessor(BaseProcessor):
                 except orjson.JSONDecodeError:
                     continue
                 
-                resp = data.get("result", {}).get("response", {})
+                result = data.get("result", {})
+                if not isinstance(result, dict):
+                    result = {}
+                resp = result.get("response", {})
+                if not isinstance(resp, dict):
+                    resp = {}
                 
                 # 元数据
                 if (llm := resp.get("llmInfo")) and not self.fingerprint:
@@ -227,17 +256,40 @@ class StreamProcessor(BaseProcessor):
                     continue
                 
                 # 提取专家ID、消息标签和思考状态
-                rollout_id = resp.get("rolloutId", "")
+                rollout_id = ""
+                for obj in (resp, result, data):
+                    rid = obj.get("rolloutId") if isinstance(obj, dict) else ""
+                    if isinstance(rid, str) and rid:
+                        rollout_id = rid
+                        break
+                if rollout_id:
+                    self._last_rollout_id = rollout_id
+                elif self._last_rollout_id and (self.is_thinking or self.think_opened):
+                    rollout_id = self._last_rollout_id
                 prefix = f"[{rollout_id}] " if rollout_id else ""
-                message_tag = resp.get("messageTag", "")
-                is_thinking = bool(resp.get("isThinking", False))
+                message_tag = resp.get("messageTag") or result.get("messageTag") or ""
+                is_thinking = bool(
+                    resp.get("isThinking", result.get("isThinking", data.get("isThinking", False)))
+                )
+                token = resp.get("token")
+                if token is None:
+                    token = result.get("token")
+                function_call = resp.get("functionCall")
+                if not function_call:
+                    function_call = result.get("functionCall")
+                web_results_data = resp.get("webSearchResults")
+                if web_results_data is None:
+                    web_results_data = result.get("webSearchResults")
+                code_result = resp.get("codeExecutionResult")
+                if code_result is None:
+                    code_result = result.get("codeExecutionResult")
+                tool_usage_card_id = resp.get("toolUsageCardId") or result.get("toolUsageCardId")
 
                 # 处理工具调用（结构化字段，Expert 模式）
-                if message_tag == "function_call" and resp.get("functionCall"):
+                if message_tag == "function_call" and function_call:
                     if self.show_think:
-                        function_call = resp["functionCall"]
-                        tool_name = function_call.get("name", "")
-                        tool_args = function_call.get("arguments", {})
+                        tool_name = function_call.get("name", "") if isinstance(function_call, dict) else ""
+                        tool_args = function_call.get("arguments", {}) if isinstance(function_call, dict) else {}
                         if isinstance(tool_args, str):
                             try:
                                 tool_args = orjson.loads(tool_args)
@@ -265,14 +317,36 @@ class StreamProcessor(BaseProcessor):
                     continue
 
                 # 处理工具执行结果（结构化字段，Expert 模式）
-                if message_tag == "raw_function_result" and (
-                    resp.get("webSearchResults") or resp.get("codeExecutionResult")
-                ):
+                if message_tag == "tool_usage_card" and token:
+                    if self.show_think:
+                        tool_name, tool_args = _parse_tool_usage_card(token if isinstance(token, str) else "")
+                        if not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                        if tool_name == "web_search":
+                            query = tool_args.get("query", "")
+                            if query:
+                                yield self._sse(f"{prefix}[tool] search: {query}\n")
+                        elif tool_name in ("web_browse", "browse_page"):
+                            url = tool_args.get("url", "")
+                            if url:
+                                yield self._sse(f"{prefix}[tool] browse: {url}\n")
+                        elif tool_name == "chatroom_send":
+                            to = tool_args.get("to", "")
+                            msg = tool_args.get("message", "")
+                            if msg:
+                                short_msg = msg[:100] + ("..." if len(msg) > 100 else "")
+                                yield self._sse(f"{prefix}[expert] -> {to}: {short_msg}\n")
+                        elif tool_name:
+                            yield self._sse(f"{prefix}[tool] {tool_name}\n")
+                    continue
+
+                if message_tag == "raw_function_result" and (web_results_data or code_result):
                     if self.show_think:
                         if not self.think_opened:
                             yield self._sse("<think>\n")
                             self.think_opened = True
-                        if web_results_data := resp.get("webSearchResults"):
+                        if web_results_data:
                             if isinstance(web_results_data, dict):
                                 results_list = web_results_data.get("results", [])
                             elif isinstance(web_results_data, list):
@@ -281,7 +355,7 @@ class StreamProcessor(BaseProcessor):
                                 results_list = []
                             if results_list:
                                 yield self._sse(f"{prefix}📄 找到 {len(results_list)} 条结果\n")
-                        if code_result := resp.get("codeExecutionResult"):
+                        if code_result:
                             exit_code = code_result.get("exitCode", -1)
                             if exit_code == 0:
                                 stdout = code_result.get("stdout", "").strip()
@@ -297,7 +371,21 @@ class StreamProcessor(BaseProcessor):
                     continue
 
                 # 普通 token
-                if (token := resp.get("token")) is not None:
+                if web_results_data and self.show_think:
+                    if not self.think_opened:
+                        yield self._sse("<think>\n")
+                        self.think_opened = True
+                    if isinstance(web_results_data, dict):
+                        results_list = web_results_data.get("results", [])
+                    elif isinstance(web_results_data, list):
+                        results_list = web_results_data
+                    else:
+                        results_list = []
+                    if results_list:
+                        yield self._sse(f"{prefix}[tool] found {len(results_list)} results\n")
+                    continue
+
+                if token is not None:
                     if not token:
                         continue
 
@@ -310,7 +398,7 @@ class StreamProcessor(BaseProcessor):
                         self._tool_tag = None
 
                     # Accumulate tool call tokens (legacy / no structured field)
-                    if message_tag in ("function_call", "raw_function_result"):
+                    if message_tag in ("function_call", "raw_function_result", "tool_usage_card"):
                         if self.show_tool_calls:
                             self._tool_tag = message_tag
                             self._tool_buf += token
@@ -334,8 +422,8 @@ class StreamProcessor(BaseProcessor):
                     self.is_thinking = is_thinking
 
                     # Append web search results if present
-                    web_results = resp.get("webSearchResults", {})
-                    if resp.get("toolUsageCardId") and isinstance(web_results.get("results"), list):
+                    web_results = web_results_data if isinstance(web_results_data, dict) else {}
+                    if tool_usage_card_id and isinstance(web_results.get("results"), list):
                         if is_thinking and self.show_think:
                             appended = ""
                             for r in web_results["results"]:
