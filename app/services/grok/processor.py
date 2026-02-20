@@ -284,6 +284,20 @@ class StreamProcessor(BaseProcessor):
                 if code_result is None:
                     code_result = result.get("codeExecutionResult")
                 tool_usage_card_id = resp.get("toolUsageCardId") or result.get("toolUsageCardId")
+                if get_config("grok.debug_stream_fields", False):
+                    logger.info(
+                        "Grok stream fields",
+                        extra={
+                            "rolloutId": rollout_id,
+                            "messageTag": message_tag,
+                            "isThinking": is_thinking,
+                            "hasFunctionCall": bool(function_call),
+                            "hasToolUsageCardId": bool(tool_usage_card_id),
+                            "hasWebSearchResults": bool(web_results_data),
+                            "hasCodeExecutionResult": bool(code_result),
+                            "tokenLen": len(token) if isinstance(token, str) else 0,
+                        },
+                    )
 
                 # 处理工具调用（结构化字段，Expert 模式）
                 if message_tag == "function_call" and function_call:

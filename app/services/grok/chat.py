@@ -300,6 +300,22 @@ class GrokChatService:
             message, model, mode, think, 
             file_attachments, image_attachments
         )
+        if get_config("grok.debug_upstream_payload", False):
+            logger.info(
+                "Upstream payload model routing",
+                extra={
+                    "modelName": payload.get("modelName"),
+                    "modelMode": payload.get("modelMode"),
+                    "requestModelDetails.modelId": (
+                        payload.get("responseMetadata", {})
+                        .get("requestModelDetails", {})
+                        .get("modelId")
+                    ),
+                    "stream": stream,
+                    "think": think,
+                    "has_file_attachments": bool(payload.get("fileAttachments")),
+                },
+            )
         proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
         timeout = get_config("grok.timeout", TIMEOUT)
         
