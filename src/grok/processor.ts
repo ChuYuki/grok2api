@@ -365,15 +365,95 @@ export function createOpenAiStreamFromGrokNdjson(
               continue;
             }
 
+            // 提取专家ID、消息标签和思考状态
+            const rolloutId = typeof grok.rolloutId === "string" ? grok.rolloutId : "";
+            const prefix = rolloutId ? `[${rolloutId}] ` : "";
+            const messageTag = typeof grok.messageTag === "string" ? grok.messageTag : "";
+            const currentIsThinking = Boolean(grok.isThinking);
+
+            // 处理工具调用（结构化字段，Expert 模式）
+            if (messageTag === "function_call" && grok.functionCall && typeof grok.functionCall === "object") {
+              if (showThinking) {
+                const fc = grok.functionCall as Record<string, unknown>;
+                const toolName = typeof fc.name === "string" ? fc.name : "";
+                let toolArgs: Record<string, unknown> = {};
+                if (typeof fc.arguments === "string") {
+                  try { toolArgs = JSON.parse(fc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+                } else if (fc.arguments && typeof fc.arguments === "object") {
+                  toolArgs = fc.arguments as Record<string, unknown>;
+                }
+                if (!isThinking) {
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `<think>\n`)));
+                  isThinking = true;
+                }
+                if (toolName === "web_search") {
+                  const query = typeof toolArgs.query === "string" ? toolArgs.query : "";
+                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🔍 搜索: ${query}\n`)));
+                } else if (toolName === "web_browse") {
+                  const url = typeof toolArgs.url === "string" ? toolArgs.url : "";
+                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🌐 浏览: ${url}\n`)));
+                } else if (toolName === "chatroom_send") {
+                  const to = typeof toolArgs.to === "string" ? toolArgs.to : "";
+                  const msg = typeof toolArgs.message === "string" ? toolArgs.message : "";
+                  if (msg) {
+                    const shortMsg = msg.length > 100 ? `${msg.slice(0, 100)}...` : msg;
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}💬 → ${to}: ${shortMsg}\n`)));
+                  }
+                } else if (toolName) {
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🔧 ${toolName}\n`)));
+                }
+              }
+              continue;
+            }
+
+            // 处理工具执行结果（结构化字段，Expert 模式）
+            if (messageTag === "raw_function_result" && (grok.webSearchResults || grok.codeExecutionResult)) {
+              if (showThinking) {
+                if (!isThinking) {
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `<think>\n`)));
+                  isThinking = true;
+                }
+                const webResults = grok.webSearchResults;
+                if (webResults) {
+                  let resultsList: unknown[] = [];
+                  if (Array.isArray(webResults)) {
+                    resultsList = webResults;
+                  } else if (typeof webResults === "object" && webResults !== null) {
+                    const r = (webResults as Record<string, unknown>).results;
+                    if (Array.isArray(r)) resultsList = r;
+                  }
+                  if (resultsList.length > 0) {
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}📄 找到 ${resultsList.length} 条结果\n`)));
+                  }
+                }
+                const codeResult = grok.codeExecutionResult;
+                if (codeResult && typeof codeResult === "object") {
+                  const cr = codeResult as Record<string, unknown>;
+                  const exitCode = typeof cr.exitCode === "number" ? cr.exitCode : -1;
+                  if (exitCode === 0) {
+                    const stdout = typeof cr.stdout === "string" ? cr.stdout.trim() : "";
+                    if (stdout) {
+                      const shortOut = stdout.length > 200 ? `${stdout.slice(0, 200)}...` : stdout;
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}✅ 执行成功: ${shortOut}\n`)));
+                    } else {
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}✅ 执行成功\n`)));
+                    }
+                  } else {
+                    const stderr = typeof cr.stderr === "string" ? cr.stderr.trim() : "";
+                    const lastLine = stderr ? stderr.split("\n").at(-1) ?? "未知错误" : "未知错误";
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}❌ 执行失败: ${lastLine}\n`)));
+                  }
+                }
+              }
+              continue;
+            }
+
             // Text chat stream
             if (Array.isArray(rawToken)) continue;
             if (typeof rawToken !== "string" || !rawToken) continue;
             let token = rawToken;
 
             if (filteredTags.some((t) => token.includes(t))) continue;
-
-            const currentIsThinking = Boolean(grok.isThinking);
-            const messageTag = typeof grok.messageTag === "string" ? grok.messageTag : "";
 
             if (thinkingFinished && currentIsThinking) continue;
 
@@ -387,7 +467,7 @@ export function createOpenAiStreamFromGrokNdjson(
               toolCallTag = null;
             }
 
-            // Accumulate tool call tokens
+            // Accumulate tool call tokens (legacy / no structured field)
             if (messageTag === "function_call" || messageTag === "raw_function_result") {
               if (showToolCalls) {
                 toolCallTag = messageTag;
@@ -420,13 +500,15 @@ export function createOpenAiStreamFromGrokNdjson(
 
             let shouldSkip = false;
             if (!isThinking && currentIsThinking) {
-              if (showThinking) content = `<think>\n${content}`;
+              if (showThinking) content = `<think>\n${prefix}${content}`;
               else shouldSkip = true;
             } else if (isThinking && !currentIsThinking) {
               if (showThinking) content = `\n</think>\n${content}`;
               thinkingFinished = true;
             } else if (currentIsThinking && !showThinking) {
               shouldSkip = true;
+            } else if (currentIsThinking && showThinking && prefix) {
+              content = `${prefix}${content}`;
             }
 
             if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
