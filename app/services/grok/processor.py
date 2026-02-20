@@ -226,13 +226,80 @@ class StreamProcessor(BaseProcessor):
                         self.fingerprint = meta["llm_info"]["modelHash"]
                     continue
                 
+                # 提取专家ID、消息标签和思考状态
+                rollout_id = resp.get("rolloutId", "")
+                prefix = f"[{rollout_id}] " if rollout_id else ""
+                message_tag = resp.get("messageTag", "")
+                is_thinking = bool(resp.get("isThinking", False))
+
+                # 处理工具调用（结构化字段，Expert 模式）
+                if message_tag == "function_call" and resp.get("functionCall"):
+                    if self.show_think:
+                        function_call = resp["functionCall"]
+                        tool_name = function_call.get("name", "")
+                        tool_args = function_call.get("arguments", {})
+                        if isinstance(tool_args, str):
+                            try:
+                                tool_args = orjson.loads(tool_args)
+                            except Exception:
+                                tool_args = {}
+                        if not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                        if tool_name == "web_search":
+                            query = tool_args.get("query", "")
+                            if query:
+                                yield self._sse(f"{prefix}🔍 搜索: {query}\n")
+                        elif tool_name == "web_browse":
+                            url = tool_args.get("url", "")
+                            if url:
+                                yield self._sse(f"{prefix}🌐 浏览: {url}\n")
+                        elif tool_name == "chatroom_send":
+                            to = tool_args.get("to", "")
+                            msg = tool_args.get("message", "")
+                            if msg:
+                                short_msg = msg[:100] + ("..." if len(msg) > 100 else "")
+                                yield self._sse(f"{prefix}💬 → {to}: {short_msg}\n")
+                        elif tool_name:
+                            yield self._sse(f"{prefix}🔧 {tool_name}\n")
+                    continue
+
+                # 处理工具执行结果（结构化字段，Expert 模式）
+                if message_tag == "raw_function_result" and (
+                    resp.get("webSearchResults") or resp.get("codeExecutionResult")
+                ):
+                    if self.show_think:
+                        if not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                        if web_results_data := resp.get("webSearchResults"):
+                            if isinstance(web_results_data, dict):
+                                results_list = web_results_data.get("results", [])
+                            elif isinstance(web_results_data, list):
+                                results_list = web_results_data
+                            else:
+                                results_list = []
+                            if results_list:
+                                yield self._sse(f"{prefix}📄 找到 {len(results_list)} 条结果\n")
+                        if code_result := resp.get("codeExecutionResult"):
+                            exit_code = code_result.get("exitCode", -1)
+                            if exit_code == 0:
+                                stdout = code_result.get("stdout", "").strip()
+                                if stdout:
+                                    short_out = stdout[:200] + ("..." if len(stdout) > 200 else "")
+                                    yield self._sse(f"{prefix}✅ 执行成功: {short_out}\n")
+                                else:
+                                    yield self._sse(f"{prefix}✅ 执行成功\n")
+                            else:
+                                stderr = code_result.get("stderr", "").strip()
+                                last_line = stderr.split('\n')[-1] if stderr else "未知错误"
+                                yield self._sse(f"{prefix}❌ 执行失败: {last_line}\n")
+                    continue
+
                 # 普通 token
                 if (token := resp.get("token")) is not None:
                     if not token:
                         continue
-
-                    is_thinking = bool(resp.get("isThinking", False))
-                    message_tag = resp.get("messageTag", "")
 
                     # Flush tool buffer when tag changes
                     if self._tool_tag and message_tag != self._tool_tag:
@@ -242,7 +309,7 @@ class StreamProcessor(BaseProcessor):
                         self._tool_buf = ""
                         self._tool_tag = None
 
-                    # Accumulate tool call tokens
+                    # Accumulate tool call tokens (legacy / no structured field)
                     if message_tag in ("function_call", "raw_function_result"):
                         if self.show_tool_calls:
                             self._tool_tag = message_tag
@@ -288,7 +355,7 @@ class StreamProcessor(BaseProcessor):
                     if is_thinking and not self.show_think:
                         continue
 
-                    yield self._sse(token)
+                    yield self._sse(f"{prefix}{token}" if (is_thinking and prefix) else token)
                         
             # Flush any pending tool call buffer
             if self._tool_buf and self._tool_tag:
