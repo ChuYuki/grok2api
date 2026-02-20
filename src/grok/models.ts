@@ -135,7 +135,7 @@ export const MODEL_CONFIG: Record<string, ModelInfo> = {
     default_top_p: 0.95,
   },
   "grok-expert": {
-    grok_model: ["grok-420", "MODEL_MODE_EXPERT"],
+    grok_model: ["grok-420", "MODEL_MODE_GROK_420"],
     rate_limit_model: "grok-420",
     display_name: "Grok Expert",
     description: "Grok Expert mode with detailed thinking",
