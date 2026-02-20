@@ -135,7 +135,7 @@ class ModelService:
             model_id="grok-expert",
             grok_model="grok-420",
             rate_limit_model="grok-420",
-            model_mode="MODEL_MODE_EXPERT",
+            model_mode="MODEL_MODE_GROK_420",
             tier=Tier.BASIC,
             cost=Cost.LOW,
             display_name="Grok Expert",
