@@ -131,22 +131,32 @@ function formatToolCall(tag: string, content: string): string {
     }
     if (name === "web_search" || name === "search") {
       const query = typeof args.query === "string" ? args.query : "";
-      return query ? `\n馃攳 鎼滅储: ${query}\n` : `\n馃攳 ${name}\n`;
+      return query ? `\nsearch: ${query}\n` : `\n${name}\n`;
     } else if (name === "browse" || name === "browse_web") {
       const url = typeof args.url === "string" ? args.url : "";
-      return url ? `\n馃寪 娴忚: ${url}\n` : `\n馃寪 ${name}\n`;
+      return url ? `\nbrowse: ${url}\n` : `\n${name}\n`;
     } else if (name === "code_execution") {
-      return "\n馃枼锔?鎵ц浠ｇ爜\n";
+      return "\nrun code\n";
     } else if (name) {
-      return `\n馃敡 ${name}\n`;
+      return `\n${name}\n`;
     }
   } else if (tag === "raw_function_result") {
     if (typeof data === "object" && data !== null) {
-      if (data.error || data.success === false) return "\n鉂?鎵ц澶辫触\n";
+      if (data.error || data.success === false) return "\nfailed\n";
     }
-    return "\n鉁?鎵ц鎴愬姛\n";
+    return "\nsuccess\n";
   }
   return "";
+}
+
+function mapExpertName(rolloutId: string): string {
+  const id = (rolloutId || "").trim();
+  if (!id) return "";
+  const normalized = id.toLowerCase().replace(/\s+/g, "");
+  if (normalized === "agent1") return "Harper";
+  if (normalized === "agent2") return "Lucas";
+  if (normalized === "agent3") return "Benjamin";
+  return id;
 }
 
 function parseToolUsageCard(token: string): { toolName: string; toolArgs: Record<string, unknown> } {
@@ -169,7 +179,7 @@ function parseToolUsageCard(token: string): { toolName: string; toolArgs: Record
 }
 
 function formatWebResultsSummary(prefix: string, resultsList: unknown[]): string[] {
-  const lines: string[] = [`${prefix}馃搫 鎵惧埌 ${resultsList.length} 鏉＄粨鏋淺n`];
+  const lines: string[] = [`${prefix}found ${resultsList.length} results\n`];
   for (const item of resultsList.slice(0, 3)) {
     if (!item || typeof item !== "object") continue;
     const r = item as Record<string, unknown>;
@@ -398,7 +408,8 @@ export function createOpenAiStreamFromGrokNdjson(
 
             // 鎻愬彇涓撳ID銆佹秷鎭爣绛惧拰鎬濊€冪姸鎬?
             const rolloutId = typeof grok.rolloutId === "string" ? grok.rolloutId : "";
-            const prefix = rolloutId ? `[${rolloutId}] ` : "";
+            const expertName = mapExpertName(rolloutId);
+            const prefix = expertName ? `[${expertName}] ` : "";
             const messageTag = typeof grok.messageTag === "string" ? grok.messageTag : "";
             const currentIsThinking = Boolean(grok.isThinking);
 
@@ -419,19 +430,19 @@ export function createOpenAiStreamFromGrokNdjson(
                 }
                 if (toolName === "web_search") {
                   const query = typeof toolArgs.query === "string" ? toolArgs.query : "";
-                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃攳 鎼滅储: ${query}\n`)));
+                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}search: ${query}\n`)));
                 } else if (toolName === "web_browse") {
                   const url = typeof toolArgs.url === "string" ? toolArgs.url : "";
-                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃寪 娴忚: ${url}\n`)));
+                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}browse: ${url}\n`)));
                 } else if (toolName === "chatroom_send") {
                   const to = typeof toolArgs.to === "string" ? toolArgs.to : "";
                   const msg = typeof toolArgs.message === "string" ? toolArgs.message : "";
                   if (msg) {
                     const shortMsg = msg.length > 100 ? `${msg.slice(0, 100)}...` : msg;
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃挰 鈫?${to}: ${shortMsg}\n`)));
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}-> ${to}: ${shortMsg}\n`)));
                   }
                 } else if (toolName) {
-                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃敡 ${toolName}\n`)));
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}${toolName}\n`)));
                 }
               }
               continue;
@@ -447,19 +458,19 @@ export function createOpenAiStreamFromGrokNdjson(
                 const { toolName, toolArgs } = parseToolUsageCard(rawToken);
                 if (toolName === "web_search") {
                   const query = typeof toolArgs.query === "string" ? toolArgs.query : "";
-                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃攷 鎼滅储: ${query}\n`)));
+                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}search: ${query}\n`)));
                 } else if (toolName === "web_browse" || toolName === "browse_page") {
                   const url = typeof toolArgs.url === "string" ? toolArgs.url : "";
-                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃寪 娴忚: ${url}\n`)));
+                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}browse: ${url}\n`)));
                 } else if (toolName === "chatroom_send") {
                   const to = typeof toolArgs.to === "string" ? toolArgs.to : "";
                   const msg = typeof toolArgs.message === "string" ? toolArgs.message : "";
                   if (msg) {
                     const shortMsg = msg.length > 160 ? `${msg.slice(0, 160)}...` : msg;
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃挰 -> ${to}: ${shortMsg}\n`)));
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}-> ${to}: ${shortMsg}\n`)));
                   }
                 } else if (toolName) {
-                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃敡 ${toolName}\n`)));
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}${toolName}\n`)));
                 }
               }
               continue;
@@ -494,14 +505,14 @@ export function createOpenAiStreamFromGrokNdjson(
                     const stdout = typeof cr.stdout === "string" ? cr.stdout.trim() : "";
                     if (stdout) {
                       const shortOut = stdout.length > 200 ? `${stdout.slice(0, 200)}...` : stdout;
-                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉁?鎵ц鎴愬姛: ${shortOut}\n`)));
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}code success: ${shortOut}\n`)));
                     } else {
-                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉁?鎵ц鎴愬姛\n`)));
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}code success\n`)));
                     }
                   } else {
                     const stderr = typeof cr.stderr === "string" ? cr.stderr.trim() : "";
-                    const lastLine = stderr ? stderr.split("\n").at(-1) ?? "鏈煡閿欒" : "鏈煡閿欒";
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉂?鎵ц澶辫触: ${lastLine}\n`)));
+                    const lastLine = stderr ? stderr.split("\n").at(-1) ?? "unknown error" : "unknown error";
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}code failed: ${lastLine}\n`)));
                   }
                 }
               }
