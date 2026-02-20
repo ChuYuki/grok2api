@@ -1,4 +1,4 @@
-import type { GrokSettings, GlobalSettings } from "../settings";
+﻿import type { GrokSettings, GlobalSettings } from "../settings";
 
 type GrokNdjson = Record<string, unknown>;
 
@@ -131,22 +131,53 @@ function formatToolCall(tag: string, content: string): string {
     }
     if (name === "web_search" || name === "search") {
       const query = typeof args.query === "string" ? args.query : "";
-      return query ? `\n🔍 搜索: ${query}\n` : `\n🔍 ${name}\n`;
+      return query ? `\n馃攳 鎼滅储: ${query}\n` : `\n馃攳 ${name}\n`;
     } else if (name === "browse" || name === "browse_web") {
       const url = typeof args.url === "string" ? args.url : "";
-      return url ? `\n🌐 浏览: ${url}\n` : `\n🌐 ${name}\n`;
+      return url ? `\n馃寪 娴忚: ${url}\n` : `\n馃寪 ${name}\n`;
     } else if (name === "code_execution") {
-      return "\n🖥️ 执行代码\n";
+      return "\n馃枼锔?鎵ц浠ｇ爜\n";
     } else if (name) {
-      return `\n🔧 ${name}\n`;
+      return `\n馃敡 ${name}\n`;
     }
   } else if (tag === "raw_function_result") {
     if (typeof data === "object" && data !== null) {
-      if (data.error || data.success === false) return "\n❌ 执行失败\n";
+      if (data.error || data.success === false) return "\n鉂?鎵ц澶辫触\n";
     }
-    return "\n✅ 执行成功\n";
+    return "\n鉁?鎵ц鎴愬姛\n";
   }
   return "";
+}
+
+function parseToolUsageCard(token: string): { toolName: string; toolArgs: Record<string, unknown> } {
+  let toolName = "";
+  let toolArgs: Record<string, unknown> = {};
+
+  const toolMatch = token.match(/<xai:tool_name>([^<]+)<\/xai:tool_name>/);
+  if (toolMatch?.[1]) toolName = toolMatch[1].trim();
+
+  const argsMatch = token.match(/<!\[CDATA\[(.+?)\]\]>/s);
+  if (argsMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(argsMatch[1]) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") toolArgs = parsed;
+    } catch {
+      toolArgs = {};
+    }
+  }
+  return { toolName, toolArgs };
+}
+
+function formatWebResultsSummary(prefix: string, resultsList: unknown[]): string[] {
+  const lines: string[] = [`${prefix}馃搫 鎵惧埌 ${resultsList.length} 鏉＄粨鏋淺n`];
+  for (const item of resultsList.slice(0, 3)) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const title = typeof r.title === "string" ? r.title.trim() : "";
+    const url = typeof r.url === "string" ? r.url.trim() : "";
+    if (title && url) lines.push(`${prefix}- ${title}\n  ${url}\n`);
+  }
+  return lines;
 }
 
 export function createOpenAiStreamFromGrokNdjson(
@@ -298,12 +329,12 @@ export function createOpenAiStreamFromGrokNdjson(
                 if (showThinking) {
                   let msg = "";
                   if (!videoProgressStarted) {
-                    msg = `<think>视频已生成${progress}%\n`;
+                    msg = `<think>瑙嗛宸茬敓鎴?{progress}%\n`;
                     videoProgressStarted = true;
                   } else if (progress < 100) {
-                    msg = `视频已生成${progress}%\n`;
+                    msg = `瑙嗛宸茬敓鎴?{progress}%\n`;
                   } else {
-                    msg = `视频已生成${progress}%</think>\n`;
+                    msg = `瑙嗛宸茬敓鎴?{progress}%</think>\n`;
                   }
                   controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, msg)));
                 }
@@ -365,13 +396,13 @@ export function createOpenAiStreamFromGrokNdjson(
               continue;
             }
 
-            // 提取专家ID、消息标签和思考状态
+            // 鎻愬彇涓撳ID銆佹秷鎭爣绛惧拰鎬濊€冪姸鎬?
             const rolloutId = typeof grok.rolloutId === "string" ? grok.rolloutId : "";
             const prefix = rolloutId ? `[${rolloutId}] ` : "";
             const messageTag = typeof grok.messageTag === "string" ? grok.messageTag : "";
             const currentIsThinking = Boolean(grok.isThinking);
 
-            // 处理工具调用（结构化字段，Expert 模式）
+            // 澶勭悊宸ュ叿璋冪敤锛堢粨鏋勫寲瀛楁锛孍xpert 妯″紡锛?
             if (messageTag === "function_call" && grok.functionCall && typeof grok.functionCall === "object") {
               if (showThinking) {
                 const fc = grok.functionCall as Record<string, unknown>;
@@ -388,25 +419,52 @@ export function createOpenAiStreamFromGrokNdjson(
                 }
                 if (toolName === "web_search") {
                   const query = typeof toolArgs.query === "string" ? toolArgs.query : "";
-                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🔍 搜索: ${query}\n`)));
+                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃攳 鎼滅储: ${query}\n`)));
                 } else if (toolName === "web_browse") {
                   const url = typeof toolArgs.url === "string" ? toolArgs.url : "";
-                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🌐 浏览: ${url}\n`)));
+                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃寪 娴忚: ${url}\n`)));
                 } else if (toolName === "chatroom_send") {
                   const to = typeof toolArgs.to === "string" ? toolArgs.to : "";
                   const msg = typeof toolArgs.message === "string" ? toolArgs.message : "";
                   if (msg) {
                     const shortMsg = msg.length > 100 ? `${msg.slice(0, 100)}...` : msg;
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}💬 → ${to}: ${shortMsg}\n`)));
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃挰 鈫?${to}: ${shortMsg}\n`)));
                   }
                 } else if (toolName) {
-                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}🔧 ${toolName}\n`)));
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃敡 ${toolName}\n`)));
                 }
               }
               continue;
             }
 
-            // 处理工具执行结果（结构化字段，Expert 模式）
+            // 澶勭悊宸ュ叿鎵ц缁撴灉锛堢粨鏋勫寲瀛楁锛孍xpert 妯″紡锛?
+            if (messageTag === "tool_usage_card" && typeof rawToken === "string" && rawToken) {
+              if (showThinking) {
+                if (!isThinking) {
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `<think>\n`)));
+                  isThinking = true;
+                }
+                const { toolName, toolArgs } = parseToolUsageCard(rawToken);
+                if (toolName === "web_search") {
+                  const query = typeof toolArgs.query === "string" ? toolArgs.query : "";
+                  if (query) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃攷 鎼滅储: ${query}\n`)));
+                } else if (toolName === "web_browse" || toolName === "browse_page") {
+                  const url = typeof toolArgs.url === "string" ? toolArgs.url : "";
+                  if (url) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃寪 娴忚: ${url}\n`)));
+                } else if (toolName === "chatroom_send") {
+                  const to = typeof toolArgs.to === "string" ? toolArgs.to : "";
+                  const msg = typeof toolArgs.message === "string" ? toolArgs.message : "";
+                  if (msg) {
+                    const shortMsg = msg.length > 160 ? `${msg.slice(0, 160)}...` : msg;
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃挰 -> ${to}: ${shortMsg}\n`)));
+                  }
+                } else if (toolName) {
+                  controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}馃敡 ${toolName}\n`)));
+                }
+              }
+              continue;
+            }
+
             if (messageTag === "raw_function_result" && (grok.webSearchResults || grok.codeExecutionResult)) {
               if (showThinking) {
                 if (!isThinking) {
@@ -423,7 +481,9 @@ export function createOpenAiStreamFromGrokNdjson(
                     if (Array.isArray(r)) resultsList = r;
                   }
                   if (resultsList.length > 0) {
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}📄 找到 ${resultsList.length} 条结果\n`)));
+                    for (const lineOut of formatWebResultsSummary(prefix, resultsList)) {
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, lineOut)));
+                    }
                   }
                 }
                 const codeResult = grok.codeExecutionResult;
@@ -434,14 +494,14 @@ export function createOpenAiStreamFromGrokNdjson(
                     const stdout = typeof cr.stdout === "string" ? cr.stdout.trim() : "";
                     if (stdout) {
                       const shortOut = stdout.length > 200 ? `${stdout.slice(0, 200)}...` : stdout;
-                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}✅ 执行成功: ${shortOut}\n`)));
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉁?鎵ц鎴愬姛: ${shortOut}\n`)));
                     } else {
-                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}✅ 执行成功\n`)));
+                      controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉁?鎵ц鎴愬姛\n`)));
                     }
                   } else {
                     const stderr = typeof cr.stderr === "string" ? cr.stderr.trim() : "";
-                    const lastLine = stderr ? stderr.split("\n").at(-1) ?? "未知错误" : "未知错误";
-                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}❌ 执行失败: ${lastLine}\n`)));
+                    const lastLine = stderr ? stderr.split("\n").at(-1) ?? "鏈煡閿欒" : "鏈煡閿欒";
+                    controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${prefix}鉂?鎵ц澶辫触: ${lastLine}\n`)));
                   }
                 }
               }
@@ -530,7 +590,7 @@ export function createOpenAiStreamFromGrokNdjson(
         finalStatus = 500;
         controller.enqueue(
           encoder.encode(
-            makeChunk(id, created, currentModel, `处理错误: ${e instanceof Error ? e.message : String(e)}`, "error"),
+            makeChunk(id, created, currentModel, `澶勭悊閿欒: ${e instanceof Error ? e.message : String(e)}`, "error"),
           ),
         );
         controller.enqueue(encoder.encode(makeDone()));
