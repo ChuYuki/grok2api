@@ -114,6 +114,41 @@ function normalizeGeneratedAssetUrls(input: unknown): string[] {
   return out;
 }
 
+function formatToolCall(tag: string, content: string): string {
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(content) as Record<string, unknown>;
+  } catch {
+    return "";
+  }
+  if (tag === "function_call") {
+    const name = typeof data.name === "string" ? data.name : "";
+    let args: Record<string, unknown> = {};
+    if (typeof data.arguments === "string") {
+      try { args = JSON.parse(data.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+    } else if (data.arguments && typeof data.arguments === "object") {
+      args = data.arguments as Record<string, unknown>;
+    }
+    if (name === "web_search" || name === "search") {
+      const query = typeof args.query === "string" ? args.query : "";
+      return query ? `\n🔍 搜索: ${query}\n` : `\n🔍 ${name}\n`;
+    } else if (name === "browse" || name === "browse_web") {
+      const url = typeof args.url === "string" ? args.url : "";
+      return url ? `\n🌐 浏览: ${url}\n` : `\n🌐 ${name}\n`;
+    } else if (name === "code_execution") {
+      return "\n🖥️ 执行代码\n";
+    } else if (name) {
+      return `\n🔧 ${name}\n`;
+    }
+  } else if (tag === "raw_function_result") {
+    if (typeof data === "object" && data !== null) {
+      if (data.error || data.success === false) return "\n❌ 执行失败\n";
+    }
+    return "\n✅ 执行成功\n";
+  }
+  return "";
+}
+
 export function createOpenAiStreamFromGrokNdjson(
   grokResp: Response,
   opts: {
@@ -136,6 +171,7 @@ export function createOpenAiStreamFromGrokNdjson(
     .map((t) => t.trim())
     .filter(Boolean);
   const showThinking = settings.show_thinking !== false;
+  const showToolCalls = settings.show_tool_calls !== false;
 
   const firstTimeoutMs = Math.max(0, (settings.stream_first_response_timeout ?? 30) * 1000);
   const chunkTimeoutMs = Math.max(0, (settings.stream_chunk_timeout ?? 120) * 1000);
@@ -163,6 +199,8 @@ export function createOpenAiStreamFromGrokNdjson(
       let thinkingFinished = false;
       let videoProgressStarted = false;
       let lastVideoProgress = -1;
+      let toolCallBuffer = "";
+      let toolCallTag: string | null = null;
 
       let buffer = "";
 
@@ -335,9 +373,28 @@ export function createOpenAiStreamFromGrokNdjson(
             if (filteredTags.some((t) => token.includes(t))) continue;
 
             const currentIsThinking = Boolean(grok.isThinking);
-            const messageTag = grok.messageTag;
+            const messageTag = typeof grok.messageTag === "string" ? grok.messageTag : "";
 
             if (thinkingFinished && currentIsThinking) continue;
+
+            // Flush tool call buffer when tag changes
+            if (toolCallTag && messageTag !== toolCallTag) {
+              if (showToolCalls && toolCallBuffer) {
+                const formatted = formatToolCall(toolCallTag, toolCallBuffer);
+                if (formatted) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, formatted)));
+              }
+              toolCallBuffer = "";
+              toolCallTag = null;
+            }
+
+            // Accumulate tool call tokens
+            if (messageTag === "function_call" || messageTag === "raw_function_result") {
+              if (showToolCalls) {
+                toolCallTag = messageTag;
+                toolCallBuffer += token;
+              }
+              continue;
+            }
 
             if (grok.toolUsageCardId && grok.webSearchResults?.results && Array.isArray(grok.webSearchResults.results)) {
               if (currentIsThinking) {
@@ -375,6 +432,12 @@ export function createOpenAiStreamFromGrokNdjson(
             if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
             isThinking = currentIsThinking;
           }
+        }
+
+        // Flush any pending tool call buffer
+        if (toolCallTag && toolCallBuffer && showToolCalls) {
+          const formatted = formatToolCall(toolCallTag, toolCallBuffer);
+          if (formatted) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, formatted)));
         }
 
         controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));

@@ -12,6 +12,7 @@ cf_clearance = ""
 max_retry = 3
 retry_status_codes = [401,429,403]
 image_generation_method = "legacy"
+show_tool_calls = true
 
 [app]
 app_url = "http://127.0.0.1:8000"

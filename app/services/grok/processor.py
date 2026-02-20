@@ -16,6 +16,39 @@ from app.services.grok.assets import DownloadService
 ASSET_URL = "https://assets.grok.com/"
 
 
+def _format_tool_call(tag: str, content: str) -> str:
+    """格式化工具调用信息"""
+    try:
+        data = orjson.loads(content)
+    except Exception:
+        return ""
+
+    if tag == "function_call":
+        name = data.get("name", "")
+        args = data.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = orjson.loads(args)
+            except Exception:
+                args = {}
+        if name in ("web_search", "search"):
+            query = args.get("query", "")
+            return f"\n🔍 搜索: {query}\n" if query else f"\n🔍 {name}\n"
+        elif name in ("browse", "browse_web"):
+            url = args.get("url", "")
+            return f"\n🌐 浏览: {url}\n" if url else f"\n🌐 {name}\n"
+        elif name == "code_execution":
+            return "\n🖥️ 执行代码\n"
+        elif name:
+            return f"\n🔧 {name}\n"
+    elif tag == "raw_function_result":
+        if isinstance(data, dict):
+            if data.get("error") or data.get("success") is False:
+                return "\n❌ 执行失败\n"
+        return "\n✅ 执行成功\n"
+    return ""
+
+
 def _build_video_poster_preview(video_url: str, thumbnail_url: str = "") -> str:
     """将 <video> 替换为可点击的 Poster 预览图（用于前端展示）"""
     safe_video = html.escape(video_url or "", quote=True)
@@ -118,7 +151,12 @@ class StreamProcessor(BaseProcessor):
         self.role_sent: bool = False
         self.filter_tags = get_config("grok.filter_tags", [])
         self.image_format = get_config("app.image_format", "url")
-        
+        self.show_tool_calls: bool = get_config("grok.show_tool_calls", True)
+        self.is_thinking: bool = False
+        self.thinking_finished: bool = False
+        self._tool_buf: str = ""
+        self._tool_tag: Optional[str] = None
+
         if think is None:
             self.show_think = get_config("grok.thinking", False)
         else:
@@ -190,9 +228,75 @@ class StreamProcessor(BaseProcessor):
                 
                 # 普通 token
                 if (token := resp.get("token")) is not None:
-                    if token and not (self.filter_tags and any(t in token for t in self.filter_tags)):
-                        yield self._sse(token)
+                    if not token:
+                        continue
+
+                    is_thinking = bool(resp.get("isThinking", False))
+                    message_tag = resp.get("messageTag", "")
+
+                    # Flush tool buffer when tag changes
+                    if self._tool_tag and message_tag != self._tool_tag:
+                        formatted = _format_tool_call(self._tool_tag, self._tool_buf)
+                        if formatted and self.show_tool_calls:
+                            yield self._sse(formatted)
+                        self._tool_buf = ""
+                        self._tool_tag = None
+
+                    # Accumulate tool call tokens
+                    if message_tag in ("function_call", "raw_function_result"):
+                        if self.show_tool_calls:
+                            self._tool_tag = message_tag
+                            self._tool_buf += token
+                        continue
+
+                    # Skip thinking tokens if thinking phase is already done
+                    if self.thinking_finished and is_thinking:
+                        continue
+
+                    # Handle thinking state transitions
+                    if not self.is_thinking and is_thinking:
+                        if self.show_think and not self.think_opened:
+                            yield self._sse("<think>\n")
+                            self.think_opened = True
+                    elif self.is_thinking and not is_thinking:
+                        if self.show_think and self.think_opened:
+                            yield self._sse("</think>\n")
+                            self.think_opened = False
+                        self.thinking_finished = True
+
+                    self.is_thinking = is_thinking
+
+                    # Append web search results if present
+                    web_results = resp.get("webSearchResults", {})
+                    if resp.get("toolUsageCardId") and isinstance(web_results.get("results"), list):
+                        if is_thinking and self.show_think:
+                            appended = ""
+                            for r in web_results["results"]:
+                                title = r.get("title", "")
+                                url = r.get("url", "")
+                                preview = r.get("preview", "").replace("\n", "")
+                                appended += f"\n- [{title}]({url} \"{preview}\")"
+                            token += f"{appended}\n"
+                        else:
+                            continue
+
+                    # Apply filter tags
+                    if self.filter_tags and any(t in token for t in self.filter_tags):
+                        continue
+
+                    # Skip thinking content if not showing
+                    if is_thinking and not self.show_think:
+                        continue
+
+                    yield self._sse(token)
                         
+            # Flush any pending tool call buffer
+            if self._tool_buf and self._tool_tag:
+                formatted = _format_tool_call(self._tool_tag, self._tool_buf)
+                if formatted and self.show_tool_calls:
+                    yield self._sse(formatted)
+                self._tool_buf = ""
+                self._tool_tag = None
             if self.think_opened:
                 yield self._sse("</think>\n")
             yield self._sse(finish="stop")
