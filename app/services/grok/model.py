@@ -132,6 +132,16 @@ class ModelService:
             display_name="Grok 4.20 Beta"
         ),
         ModelInfo(
+            model_id="grok-expert",
+            grok_model="grok-420",
+            rate_limit_model="grok-420",
+            model_mode="MODEL_MODE_EXPERT",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="Grok Expert",
+            description="Grok Expert mode with detailed thinking"
+        ),
+        ModelInfo(
             model_id="grok-imagine-1.0",
             grok_model="grok-3",
             rate_limit_model="grok-3",

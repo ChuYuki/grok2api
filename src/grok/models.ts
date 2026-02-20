@@ -134,6 +134,17 @@ export const MODEL_CONFIG: Record<string, ModelInfo> = {
     supported_max_output_tokens: 131072,
     default_top_p: 0.95,
   },
+  "grok-expert": {
+    grok_model: ["grok-420", "MODEL_MODE_EXPERT"],
+    rate_limit_model: "grok-420",
+    display_name: "Grok Expert",
+    description: "Grok Expert mode with detailed thinking",
+    raw_model_path: "xai/grok-420",
+    default_temperature: 1.0,
+    default_max_output_tokens: 8192,
+    supported_max_output_tokens: 131072,
+    default_top_p: 0.95,
+  },
   "grok-imagine-1.0": {
     grok_model: ["grok-3", "MODEL_MODE_FAST"],
     rate_limit_model: "grok-3",

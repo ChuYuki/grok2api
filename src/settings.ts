@@ -23,6 +23,7 @@ export interface GrokSettings {
   dynamic_statsig?: boolean;
   filtered_tags?: string;
   show_thinking?: boolean;
+  show_tool_calls?: boolean;
   temporary?: boolean;
   video_poster_preview?: boolean;
   stream_first_response_timeout?: number;
@@ -100,6 +101,7 @@ const DEFAULTS: SettingsBundle = {
     dynamic_statsig: true,
     filtered_tags: "xaiartifact,xai:tool_usage_card",
     show_thinking: true,
+    show_tool_calls: true,
     temporary: false,
     video_poster_preview: false,
     stream_first_response_timeout: 30,
