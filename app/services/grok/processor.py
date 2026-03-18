@@ -16,6 +16,30 @@ from app.services.grok.assets import DownloadService
 
 ASSET_URL = "https://assets.grok.com/"
 
+# Compiled patterns for strict grok:render block stripping (streaming only)
+_GROK_RENDER_OPEN_RE = re.compile(r"<grok:render\b[^>]*>", re.IGNORECASE)
+_GROK_RENDER_CLOSE_TAG = "</grok:render>"
+_GROK_RENDER_TAG_PREFIX = "<grok:render"
+# Maximum size of the cross-token lookahead buffer for grok:render tag detection
+_GROK_RENDER_BUF_MAX = 8192
+
+
+def _find_partial_tag_suffix(text: str) -> int:
+    """Return the length of the longest suffix of text that is a prefix of '<grok:render'.
+
+    Args:
+        text: The string to examine.
+
+    Returns:
+        Length of the trailing partial tag prefix (0 if none found).
+    """
+    tag = _GROK_RENDER_TAG_PREFIX
+    max_check = min(len(tag), len(text))
+    for length in range(max_check, 0, -1):
+        if text.endswith(tag[:length]):
+            return length
+    return 0
+
 
 def _format_tool_call(tag: str, content: str) -> str:
     """格式化工具调用信息"""
@@ -180,6 +204,9 @@ class StreamProcessor(BaseProcessor):
         self._tool_buf: str = ""
         self._tool_tag: Optional[str] = None
         self._last_rollout_id: str = ""
+        # State for cross-token <grok:render ...>...</grok:render> block stripping
+        self._in_grok_render_block: bool = False
+        self._grok_render_pending: str = ""
 
         if think is None:
             self.show_think = get_config("grok.thinking", False)
@@ -462,6 +489,44 @@ class StreamProcessor(BaseProcessor):
                             token += f"{appended}\n"
                         else:
                             continue
+
+                    # Strictly strip <grok:render ...>...</grok:render> blocks across token boundaries
+                    merged = self._grok_render_pending + token
+                    if len(merged) > _GROK_RENDER_BUF_MAX:
+                        merged = merged[-_GROK_RENDER_BUF_MAX:]
+                    out_parts: list[str] = []
+                    s = merged
+                    while s:
+                        if not self._in_grok_render_block:
+                            m = _GROK_RENDER_OPEN_RE.search(s)
+                            if not m:
+                                # No complete open tag; hold back any partial tag prefix at end
+                                partial_len = _find_partial_tag_suffix(s)
+                                if partial_len:
+                                    out_parts.append(s[:-partial_len])
+                                    s = s[-partial_len:]
+                                else:
+                                    out_parts.append(s)
+                                    s = ""
+                                break
+                            if m.start() > 0:
+                                out_parts.append(s[: m.start()])
+                            s = s[m.end():]
+                            self._in_grok_render_block = True
+                            continue
+                        # Inside block: look for close tag
+                        idx = s.find(_GROK_RENDER_CLOSE_TAG)
+                        if idx == -1:
+                            # Retain potential partial close tag at end for next iteration
+                            tail_len = len(_GROK_RENDER_CLOSE_TAG) - 1
+                            s = s[-tail_len:] if len(s) > tail_len else s
+                            break
+                        s = s[idx + len(_GROK_RENDER_CLOSE_TAG):]
+                        self._in_grok_render_block = False
+                    self._grok_render_pending = s
+                    token = "".join(out_parts)
+                    if not token:
+                        continue
 
                     # Apply filter tags
                     if self.filter_tags and any(t in token for t in self.filter_tags):
