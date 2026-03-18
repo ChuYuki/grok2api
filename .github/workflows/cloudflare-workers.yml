@@ -55,13 +55,12 @@ jobs:
           import json
           import os
           import re
+          import urllib.error
           import urllib.request
           
           token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
           account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
           build_sha = os.environ.get("GITHUB_SHA", "") or ""
-          if not token or not account_id:
-              raise SystemExit("Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID")
 
           src_path = "wrangler.toml"
           dst_path = "wrangler.ci.toml"
@@ -73,75 +72,96 @@ jobs:
               return m.group(1).strip() if m and m.group(1).strip() else fallback
 
           worker_name = extract(r'(?m)^name\s*=\s*"([^"]+)"\s*$', "grok2api")
-          
+          d1_name = extract(r'(?m)^database_name\s*=\s*"([^"]+)"\s*$', worker_name)
           kv_title = f"{worker_name}-cache"
-          kv_base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces"
-          print(f"Ensuring KV namespace: {kv_title}", flush=True)
-          
+          need_bootstrap = (
+              "REPLACE_WITH_KV_NAMESPACE_ID" in wrangler_text
+              or "REPLACE_WITH_D1_DATABASE_ID" in wrangler_text
+          )
+
           def request(method: str, url: str, data=None):
               headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
               body = None if data is None else json.dumps(data).encode("utf-8")
               req = urllib.request.Request(url, data=body, headers=headers, method=method)
-              with urllib.request.urlopen(req) as resp:
-                  return json.loads(resp.read().decode("utf-8"))
-          
-          # === Ensure KV namespace ===
-          kv_id = None
-          page = 1
-          while True:
-              print(f"KV list page={page}...", flush=True)
-              res = request("GET", f"{kv_base}?per_page=100&page={page}")
-              if not res.get("success"):
-                  raise RuntimeError(res)
-              for item in res.get("result", []):
-                  if item.get("title") == kv_title:
-                      kv_id = item.get("id")
+              try:
+                  with urllib.request.urlopen(req) as resp:
+                      return json.loads(resp.read().decode("utf-8"))
+              except urllib.error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", errors="replace")
+                  raise RuntimeError(
+                      f"Cloudflare API {method} {url} failed: HTTP {exc.code} {exc.reason}; body={body}"
+                  ) from exc
+
+          kv_id = extract(r'(?m)^id\s*=\s*"([^"]+)"\s*$', "")
+          d1_id = extract(r'(?m)^database_id\s*=\s*"([^"]+)"\s*$', "")
+
+          if need_bootstrap:
+              if not token or not account_id:
+                  raise SystemExit(
+                      "wrangler.toml still contains placeholder resource ids, "
+                      "but CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is missing"
+                  )
+
+              kv_base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces"
+              print(f"Ensuring KV namespace: {kv_title}", flush=True)
+
+              kv_id = None
+              page = 1
+              while True:
+                  print(f"KV list page={page}...", flush=True)
+                  res = request("GET", f"{kv_base}?per_page=100&page={page}")
+                  if not res.get("success"):
+                      raise RuntimeError(res)
+                  for item in res.get("result", []):
+                      if item.get("title") == kv_title:
+                          kv_id = item.get("id")
+                          break
+                  if kv_id:
                       break
-              if kv_id:
-                  break
-              info = res.get("result_info") or {}
-              if page >= int(info.get("total_pages") or 1):
-                  break
-              page += 1
-          
-          if not kv_id:
-              print("KV namespace not found; creating...", flush=True)
-              res = request("POST", kv_base, {"title": kv_title})
-              if not res.get("success"):
-                  raise RuntimeError(res)
-              kv_id = res["result"]["id"]
-
-          # === Ensure D1 database ===
-          d1_name = extract(r'(?m)^database_name\s*=\s*"([^"]+)"\s*$', worker_name)
-          d1_base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database"
-          print(f"Ensuring D1 database: {d1_name}", flush=True)
-
-          d1_id = None
-          page = 1
-          while True:
-              print(f"D1 list page={page}...", flush=True)
-              res = request("GET", f"{d1_base}?per_page=100&page={page}")
-              if not res.get("success"):
-                  raise RuntimeError(res)
-              for item in res.get("result", []):
-                  if item.get("name") == d1_name:
-                      d1_id = item.get("uuid") or item.get("id")
+                  info = res.get("result_info") or {}
+                  if page >= int(info.get("total_pages") or 1):
                       break
-              if d1_id:
-                  break
-              info = res.get("result_info") or {}
-              if page >= int(info.get("total_pages") or 1):
-                  break
-              page += 1
+                  page += 1
 
-          if not d1_id:
-              print("D1 database not found; creating...", flush=True)
-              res = request("POST", d1_base, {"name": d1_name})
-              if not res.get("success"):
-                  raise RuntimeError(res)
-              d1_id = res.get("result", {}).get("uuid") or res.get("result", {}).get("id")
+              if not kv_id:
+                  print("KV namespace not found; creating...", flush=True)
+                  res = request("POST", kv_base, {"title": kv_title})
+                  if not res.get("success"):
+                      raise RuntimeError(res)
+                  kv_id = res["result"]["id"]
+
+              d1_base = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database"
+              print(f"Ensuring D1 database: {d1_name}", flush=True)
+
+              d1_id = None
+              page = 1
+              while True:
+                  print(f"D1 list page={page}...", flush=True)
+                  res = request("GET", f"{d1_base}?per_page=100&page={page}")
+                  if not res.get("success"):
+                      raise RuntimeError(res)
+                  for item in res.get("result", []):
+                      if item.get("name") == d1_name:
+                          d1_id = item.get("uuid") or item.get("id")
+                          break
+                  if d1_id:
+                      break
+                  info = res.get("result_info") or {}
+                  if page >= int(info.get("total_pages") or 1):
+                      break
+                  page += 1
+
               if not d1_id:
-                  raise RuntimeError({"error": "Missing D1 database id", "response": res})
+                  print("D1 database not found; creating...", flush=True)
+                  res = request("POST", d1_base, {"name": d1_name})
+                  if not res.get("success"):
+                      raise RuntimeError(res)
+                  d1_id = res.get("result", {}).get("uuid") or res.get("result", {}).get("id")
+                  if not d1_id:
+                      raise RuntimeError({"error": "Missing D1 database id", "response": res})
+          else:
+              print(f"Using committed KV namespace id: {kv_id}", flush=True)
+              print(f"Using committed D1 database id: {d1_id}", flush=True)
 
           print("Generating wrangler.ci.toml...", flush=True)
           text2 = wrangler_text
